@@ -1,0 +1,85 @@
+import os
+import xml.etree.ElementTree as ET
+import numpy as np
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Dropout, Flatten, Dense
+
+# Define the preprocessing function
+def preprocess_image(image):
+    image = image / 255.0
+    return image
+
+def preprocess_annotation(annotation_path):
+    tree = ET.parse(annotation_path)
+    root = tree.getroot()
+
+    boxes = []
+
+    for obj in root.findall('object'):
+        label = obj.find('name').text
+
+        if label == 'product_name':
+            box = obj.find('bndbox')
+            xmin = int(box.find('xmin').text)
+            ymin = int(box.find('ymin').text)
+            xmax = int(box.find('xmax').text)
+            ymax = int(box.find('ymax').text)
+            boxes.append([xmin, ymin, xmax, ymax])
+
+    mask = np.zeros((224, 224), dtype=np.float32)
+
+    for box in boxes:
+        xmin, ymin, xmax, ymax = box
+        mask[ymin:ymax, xmin:xmax] = 1.0
+
+    return mask
+
+def preprocess_data(image_dir, annotation_dir):
+    datagen = ImageDataGenerator(preprocessing_function=preprocess_image)
+
+    image_generator = datagen.flow_from_directory(
+        image_dir,
+        target_size=(224, 224),
+        batch_size=32,
+        class_mode=None
+    )
+
+    mask_generator = datagen.flow_from_directory(
+        annotation_dir,
+        target_size=(224, 224),
+        batch_size=32,
+        class_mode=None
+    )
+
+    generator = zip(image_generator, mask_generator)
+
+    for image_batch, mask_batch in generator:
+        mask_batch = np.array([preprocess_annotation(annotation_path) for annotation_path in mask_batch])
+        yield (image_batch, mask_batch)
+
+# Define the model
+model = Sequential([
+    Conv2D(32, (3, 3), activation='relu', input_shape=(224, 224, 3)),
+    MaxPooling2D((2, 2)),
+    Dropout(0.25),
+    Conv2D(64, (3, 3), activation='relu'),
+    MaxPooling2D((2, 2)),
+    Dropout(0.25),
+    Conv2D(128, (3, 3), activation='relu'),
+    MaxPooling2D((2, 2)),
+    Dropout(0.25),
+    Flatten(),
+    Dense(256, activation='relu'),
+    Dropout(0.5),
+    Dense(1, activation='sigmoid')
+])
+
+# Compile the model
+model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+
+# Train the model
+train_data = preprocess_data('train', 'annotations')
+val_data = preprocess_data('val', 'annotations')
+
+model.fit(train_data, epochs=10, steps_per_epoch=100, validation_data=val_data, validation_steps=50)
